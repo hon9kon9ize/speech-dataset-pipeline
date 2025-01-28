@@ -1,0 +1,10 @@
+speechbrain
+mutagen
+torch
+torchaudio
+tqdm
+librosa
+soundfile
+scipy
+sklearn-learn
+demucs

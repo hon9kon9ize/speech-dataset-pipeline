@@ -1,0 +1,7 @@
+audios
+audios_16k
+chunks
+__pycache__
+pretrained_models
+/notebooks/projects/speech-dataset/pretrained_model_checkpoints
+tmp
