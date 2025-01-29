@@ -444,7 +444,7 @@ if __name__ == "__main__":
                 episodes = get_podcast_metadata(pid, year)
                 metadata.extend(episodes)
 
-    pd.DataFrame(metadata).to_csv("metadata.csv", index=False)
+        pd.DataFrame(metadata).to_csv("metadata.csv", index=False)
 
     # download mp3 files using multiprocessing
     with multiprocessing.Pool(processes=args.num_proc) as pool:
