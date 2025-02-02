@@ -1,71 +1,71 @@
-import warnings
-
-warnings.simplefilter(action="ignore", category=FutureWarning)
-
 import argparse
+import glob
 import os
-import multiprocessing
-import soundfile as sf
-import torchaudio
 from tqdm.auto import tqdm
-from diarizer import Diarizer
+import numpy as np
+import librosa
+import logging
+import multiprocessing as mp
+import soundfile as sf
+from audio_separator.separator import Separator
 
-diar = Diarizer(
-    embed_model="ecapa",  # supported types: ['xvec', 'ecapa']
-    cluster_method="sc",  # supported types: ['ahc', 'sc']
-    window=1.5,  # size of window to extract embeddings (in seconds)
-    period=0.75,  # hop of window (in seconds)
+separator = Separator(
+    use_autocast=True,
+    mdxc_params={
+        "batch_size": 128,
+    },
+    output_dir="tmp",
+    log_level=logging.ERROR,
 )
 
-
-def vad(
-    path_to_audiofile: str,
-    out_dir="chunks",
-    sampling_rate=16_000,
-):
-    audio_dir = os.path.splitext(os.path.basename(path_to_audiofile))[0]
-    wav, _ = torchaudio.load(path_to_audiofile)
-    segments = diar.diarize(wav, sample_rate=sampling_rate)
-
-    os.makedirs(f"{out_dir}/{audio_dir}", exist_ok=True)
-
-    for i, segment in enumerate(segments):
-        start = int(segment["start"] * 16000)
-        end = int(segment["end"] * 16000)
-        label = f"speaker{segment['label']:02d}"
-        chunk = wav[0, start:end]
-
-        sf.write(
-            f"{out_dir}/{audio_dir}/{i:03d}-{start}-{end}-{label}.mp3",
-            chunk,
-            16000,
-            format="mp3",
-        )
+# Load a model
+separator.load_model(model_filename="melband_roformer_instvox_duality_v2.ckpt")
 
 
-def vad_split(root_folder, num_proc=8):
-    os.makedirs("chunks", exist_ok=True)
+def separate_audio(mp3_path: str):
+    mp3_filename = os.path.basename(mp3_path)
+    vocals_path = os.path.join("vocals", mp3_filename)
 
-    audio_files = os.listdir(root_folder)
-    output_files = [
-        os.path.join(root_folder, audio_file)
-        for audio_file in audio_files
-        if audio_file.endswith(".mp3")
-    ]
+    if os.path.exists(vocals_path):
+        return
 
-    with multiprocessing.Pool(processes=num_proc) as pool:
-        list(tqdm(pool.imap_unordered(vad, output_files), total=len(output_files)))
+    try:
+        tmp_bgm_path, tmp_vocal_path = separator.separate(mp3_path)
+        tmp_bgm_path = os.path.join("tmp", tmp_bgm_path)
+        tmp_vocal_path = os.path.join("tmp", tmp_vocal_path)
+
+        wav, _ = librosa.load(tmp_vocal_path, sr=16000, mono=True)
+        sf.write(vocals_path, wav, 16000)
+
+        # remove the temporary files
+        os.remove(tmp_bgm_path)
+    except:
+        pass
+
+
+def main(root_folder, num_proc=8):
+    mp3_files = glob.glob(os.path.join(root_folder, "*.mp3"))
+
+    # create the target folder
+    os.makedirs("vocals", exist_ok=True)
+    # create a tmp folder
+    os.makedirs("tmp", exist_ok=True)
+
+    with mp.Pool(processes=num_proc) as pool:
+        list(tqdm(pool.imap(separate_audio, mp3_files), total=len(mp3_files)))
 
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn")
+    try:
+        mp.set_start_method("spawn")
+    except RuntimeError:
+        pass
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--audio_root_path", required=True, type=str)
     parser.add_argument("--num_proc", type=int, default=8)
     args = parser.parse_args()
 
-    vad_split(args.audio_root_path, num_proc=args.num_proc)
+    main(args.audio_root_path, num_proc=args.num_proc)
 
-
-# python step-1.py --audio_root_path "xx"
+#  python step-2.py --audio_root_path "xxx"

@@ -1,80 +1,82 @@
+import warnings
+
+warnings.simplefilter(action="ignore", category=FutureWarning)
+
 import argparse
-import glob
 import os
-import torch
-import tempfile
-from tqdm.auto import tqdm
-import numpy as np
-import librosa
-import multiprocessing as mp
-import subprocess
+import multiprocessing
 import soundfile as sf
+import torchaudio
+import torch
+from tqdm.auto import tqdm
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+model, utils = torch.hub.load(
+    repo_or_dir="snakers4/silero-vad",
+    model="silero_vad",
+    onnx=True,
+    force_reload=False,
+)
+SAMPLING_RATE = 16000
+(get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
+vad_iterator = VADIterator(model, sampling_rate=SAMPLING_RATE)
 
-temp_dir = tempfile.gettempdir()
 
-
-def separate_audio(mp3_path: str):
-    mp3_filename = os.path.basename(mp3_path)
-    audio_folder = os.path.dirname(mp3_path)
-    file_name_without_extension = os.path.splitext(mp3_filename)[0]
-    tmp_vocal_path = os.path.join(
-        temp_dir, "mdx_extra", f"{file_name_without_extension}/vocals.wav"
-    )
-    tmp_bgm_path = os.path.join(
-        temp_dir, "mdx_extra", f"{file_name_without_extension}/no_vocals.wav"
-    )
-    vocals_path = os.path.join(
-        audio_folder, file_name_without_extension + "_vocals.mp3"
-    )
-
-    if file_name_without_extension.endswith("_vocals"):
-        pass
-    else:
-        command = [
-            "demucs",
-            "--two-stems",
-            "vocals",
-            mp3_path,
-            "-o",
-            temp_dir,
-            "-n",
-            "mdx_extra",
-        ]
-        subprocess.run(
-            command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+def vad(
+    path_to_audiofile: str,
+    out_dir="chunks",
+    sampling_rate=16_000,
+):
+    try:
+        audio_dir = os.path.splitext(os.path.basename(path_to_audiofile))[0]
+        wav, _ = torchaudio.load(path_to_audiofile)
+        speech_timestamps = get_speech_timestamps(
+            wav,
+            model,
+            sampling_rate=sampling_rate,
         )
-        vocal, _ = librosa.load(tmp_vocal_path, sr=16_000)
-        bgm, _ = librosa.load(tmp_bgm_path, sr=16_000)
-        snr = 10 * np.log10(np.mean(vocal**2) / np.mean(bgm**2))
 
-        if snr.item() > 4:
+        os.makedirs(f"{out_dir}/{audio_dir}", exist_ok=True)
+
+        for i, segment in enumerate(speech_timestamps):
+            start = int(segment["start"])
+            end = int(segment["end"])
+            chunk = wav[0, start:end]
+
             sf.write(
-                vocals_path,
-                vocal,
-                16_000,
+                f"{out_dir}/{audio_dir}/{i:03d}-{start}-{end}.mp3",
+                chunk,
+                16000,
                 format="mp3",
             )
-
-        # remove the temporary files
-        os.remove(tmp_vocal_path)
-        os.remove(tmp_bgm_path)
+    except:
+        print("Failed to separate", path_to_audiofile)
 
 
-def main(root_folder, num_proc=8):
-    mp3_files = glob.glob(os.path.join(root_folder, "**/*.mp3"))
+def vad_split(root_folder, num_proc=8):
+    os.makedirs("chunks", exist_ok=True)
 
-    with mp.Pool(processes=num_proc) as pool:
-        list(tqdm(pool.imap_unordered(separate_audio, mp3_files), total=len(mp3_files)))
+    audio_files = os.listdir(root_folder)
+    output_files = [
+        os.path.join(root_folder, audio_file)
+        for audio_file in audio_files
+        if audio_file.endswith(".mp3")
+    ]
+
+    print("Audio files:", len(audio_files))
+
+    with multiprocessing.Pool(processes=num_proc) as pool:
+        list(tqdm(pool.imap_unordered(vad, output_files), total=len(output_files)))
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--audio_root_path", required=True, type=str)
     parser.add_argument("--num_proc", type=int, default=8)
     args = parser.parse_args()
 
-    main(args.audio_root_path, num_proc=args.num_proc)
+    vad_split(args.audio_root_path, num_proc=args.num_proc)
 
-#  python step-2.py --audio_root_path "xxx"
+
+# python step-1.py --audio_root_path "xx"

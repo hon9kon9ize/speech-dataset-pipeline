@@ -8,3 +8,5 @@ soundfile
 scipy
 sklearn-learn
 demucs
+yamlargparse
+pesq
