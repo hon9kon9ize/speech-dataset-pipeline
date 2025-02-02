@@ -2,7 +2,9 @@ import os
 import glob
 import argparse
 from tqdm.auto import tqdm
+from typing import List
 import pandas as pd
+from mutagen.mp3 import MP3
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
@@ -17,9 +19,20 @@ model = AutoModel(
 languages = ["zn", "en", "yue", "ja", "ko", "nospeech"]
 
 
-def transcribe(audio_path: str):
+def transcribe(audio_paths: List[str]):
+    input_audios = []
+
+    # Filter out audios that are too long or too short
+    for audio_path in audio_paths:
+        audio = MP3(audio_path)
+
+        if audio.info.length >= 30 or audio.info.length < 1:
+            continue
+
+        input_audios.append(audio_path)
+
     res = model.generate(
-        input=audio_path,
+        input=input_audios,
         cache={},
         language="auto",  # "zn", "en", "yue", "ja", "ko", "nospeech"
         use_itn=True,
@@ -48,7 +61,9 @@ def main(root_folder: str, batch_size=64):
     print("Total audio files:", len(mp3_files))
     print("Transcribing...")
 
-    for i in range(0, len(mp3_files), batch_size):
+    for i in tqdm(
+        range(0, len(mp3_files), batch_size), total=len(mp3_files) // batch_size
+    ):
         batch_files = mp3_files[i : i + batch_size]
 
         res = transcribe(batch_files)
