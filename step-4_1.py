@@ -41,7 +41,8 @@ def transcribe(audio_paths: List[str]):
 
     for r in res:
         key = r["key"]
-        lang = [f"<|{lang}|>" in r["text"] for lang in languages][0]
+        langs = [lang for lang in languages if f"<|{lang}|>" in r["text"]]
+        lang = langs[0] if langs else None
         batch_results.append((key, lang, rich_transcription_postprocess(r["text"])))
 
     return batch_results
@@ -58,6 +59,12 @@ def main(root_folder: str, batch_size=64):
 
     results = []
 
+    # resume from last checkpoint
+    if os.path.exists("transcriptions/sensevoice.csv"):
+        df = pd.read_csv("transcriptions/sensevoice.csv")
+        results = [(row["key"], row["lang"], row["text"]) for _, row in df.iterrows()]
+        mp3_files = [f for f in mp3_files if f not in df["key"].tolist()]
+
     print("Total audio files:", len(mp3_files))
     print("Transcribing...")
 
@@ -68,6 +75,11 @@ def main(root_folder: str, batch_size=64):
 
         res = transcribe(batch_files)
         results += res
+
+        # save every 10000 transcriptions
+        if len(results) % 10_000 == 0 and len(results) > 0:
+            df = pd.DataFrame(results, columns=["key", "lang", "text"])
+            df.to_csv("transcriptions/sensevoice.csv", index=False)
 
     df = pd.DataFrame(results, columns=["key", "lang", "text"])
     df.to_csv("transcriptions/sensevoice.csv", index=False)

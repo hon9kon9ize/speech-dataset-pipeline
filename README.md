@@ -7,7 +7,7 @@
 - [x] Step 4: Transcribe audio files
   - [x] Step 4.1: Transcribe audio files using SenseVoiceSmall with LID
   - [x] Step 4.2: Transcribe audio files using Whisper V3
-  - [ ] Step 4.23: Transcribe audio files using Cantonese Whisper V2
+  - [x] Step 4.23: Transcribe audio files using Cantonese Whisper V2
 - [ ] Step 5: Transcription Post-processing
 
 ## Prerequisites
@@ -26,7 +26,17 @@ python step-0.py
 python step-1.py --audio_root_path audios_16k
 
 # Split audio files into smaller chunks
-python step-2.py --audio_root_path chunks
+python step-2.py --audio_root_path vocals
 
-TODO...
+# Voice enhancement
+python step-3.py --audio_root_path enhanced
+
+# Transcribe audio files using SenseVoiceSmall with LID
+python step-4_1.py --audio_root_path enhanced
+
+# Transcribe audio files using Whisper V3
+python step-4_2.py --audio_root_path enhanced
+
+# Transcribe audio files using Cantonese Whisper V2
+python step-4_3.py --audio_root_path enhanced
 ```
