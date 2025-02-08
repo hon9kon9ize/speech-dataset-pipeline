@@ -11,7 +11,6 @@ import librosa
 import pickle
 import torch
 from datasets import Dataset
-import torch.nn.functional as F
 from transformers import (
     EncoderDecoderCache,
     AutoModelForSpeechSeq2Seq,
@@ -36,9 +35,7 @@ model = (
 processor = AutoProcessor.from_pretrained("openai/whisper-large-v3")
 
 prompt_text, prompt_wav = pickle.load(open("prompt.pkl", "rb"))
-
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
-eos_token_id = processor.tokenizer.eos_token_id
+blank_token = processor.tokenizer.encode(" ")[0]
 
 
 def encoder_forward(input_features):
@@ -85,7 +82,7 @@ def prompt_generation(
     )
     past_key_values = None
     decoder_input_ids = torch.LongTensor(
-        [decoder_input_ids + prompt_text[:-1]] * batch_size
+        [decoder_input_ids + prompt_text + [blank_token]] * batch_size
     ).to(device)
     outputs = decoder_forward(
         decoder_input_ids[:, :-1],
@@ -98,6 +95,7 @@ def prompt_generation(
         decoder_input_ids=decoder_input_ids,
         encoder_outputs=encoder_outputs,
         past_key_values=past_key_values,
+        temperature=0.25,
         use_cache=True,
         **kwargs,
     )
@@ -138,22 +136,34 @@ class DataCollatorSpeechSeq2SeqWithPadding:
             )
             .to(device)
             .to(torch_dtype),
-            "audio": [feature["audio"] for feature in features],
+            "audio_file": [feature["audio_file"] for feature in features],
         }
 
         return batch
 
 
 def get_input_features(batch):
-    batch["audio"] = [librosa.load(audio, sr=16_000)[0] for audio in batch["audio"]]
-    batch["audio"] = [
-        audio for audio in batch["audio"] if audio.shape[0] // 16_000 <= 30
-    ]  # below 30 seconds
+    output_batch = {
+        "audio_file": [],
+        "audio": [],
+    }
 
-    return batch
+    for audio in batch["audio"]:
+        try:
+            wav = librosa.load(audio, sr=16_000)[0]
+            duration = wav.shape[0] // 16_000
+            if (duration >= 5) or (
+                duration <= 30
+            ):  # below 30 seconds or above 5 seconds
+                output_batch["audio_file"].append(audio)
+                output_batch["audio"].append(wav)
+        except Exception as e:
+            print(f"Error processing {audio}: {e}")
+
+    return output_batch
 
 
-def main(root_folder: str, batch_size=64):
+def main(root_folder: str, batch_size=64, num_proc=128):
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
     mp3_files = glob.glob(os.path.join(root_folder, "*.mp3")) + glob.glob(
         os.path.join(root_folder, "**/*.mp3"), recursive=True
@@ -162,19 +172,36 @@ def main(root_folder: str, batch_size=64):
     os.makedirs("transcriptions", exist_ok=True)
 
     print("Total audio files:", len(mp3_files))
-    print("Transcribing...")
 
     ds = Dataset.from_dict({"audio": mp3_files})
-    ds = ds.map(get_input_features, batched=True)
+    ds = ds.map(get_input_features, batched=True, num_proc=num_proc)
     dataloader = DataLoader(ds, batch_size=batch_size, collate_fn=data_collator)
-    results = {"audio": [], "transcription": []}
+    results = {"audio_file": [], "transcription": []}
+
+    # resume from last checkpoint
+    if os.path.exists("transcriptions/whisper_v3.csv"):
+        df = pd.read_csv("transcriptions/whisper_v3.csv")
+        results = {
+            "audio_file": df["audio_file"].tolist(),
+            "transcription": df["transcription"].tolist(),
+        }
+        ds = ds.filter(lambda x: x["audio_file"] not in results["audio_file"])
+        dataloader = DataLoader(ds, batch_size=batch_size, collate_fn=data_collator)
+
+    print("Transcribing...")
 
     for batch in tqdm(dataloader, total=len(ds) // batch_size):
         outputs = transcribe(batch)
-        results["audio"].extend(batch["audio"])
+        results["audio_file"].extend(batch["audio_file"])
         results["transcription"].extend(outputs["transcription"])
 
+        # Save every 10,000 transcriptions
+        if len(results["audio_file"]) % 10_000 == 0 and len(results["audio_file"]) > 0:
+            df = pd.DataFrame(results)
+            df.to_csv("transcriptions/whisper_v3.csv", index=False)
+
     df = pd.DataFrame(results)
+    df = df[["audio_file", "transcription"]]
     df.to_csv("transcriptions/whisper_v3.csv", index=False)
 
 
@@ -182,6 +209,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--audio_root_path", required=True, type=str)
     parser.add_argument("--batch_size", default=8, type=int)
+    parser.add_argument("--num_proc", default=64, type=int)
     args = parser.parse_args()
 
-    main(args.audio_root_path, args.batch_size)
+    main(args.audio_root_path, args.batch_size, args.num_proc)
